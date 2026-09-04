@@ -260,3 +260,247 @@ After installation, you can:
 3. Configure users and permissions
 4. Set up email integration
 5. Configure backup automation
+
+---
+
+## PostgreSQL Support (Experimental)
+
+### Current Status (2026)
+
+**Important**: PostgreSQL support for ERPNext is **NOT production-ready**.
+
+| Component | PostgreSQL Support |
+|-----------|-------------------|
+| Frappe Framework | ✅ Supported |
+| ERPNext | ❌ Not officially supported |
+| HRMS | ❌ Not officially supported |
+| Custom Apps | ⚠️ With caveats |
+
+**What works:**
+- Frappe Framework core functionality
+- Basic CRUD operations
+- Custom doctypes (simple)
+
+**What doesn't work:**
+- ERPNext modules (accounts, stock, buying, etc.)
+- Transaction isolation issues
+- Complex queries with JOINs
+- Some MariaDB-specific SQL syntax
+
+**Expected timeline:**
+- PostgreSQL support may come in ERPNext v17
+- Not a priority for Frappe team currently
+- Community efforts ongoing but not production-ready
+
+### Recommendation
+
+**Use MariaDB for production ERPNext deployments.**
+
+PostgreSQL is recommended only for:
+- Development/testing environments
+- Custom Frappe apps (without ERPNext)
+- Future-proofing (when support arrives)
+
+---
+
+## PostgreSQL Configuration for Custom Apps
+
+If you're building **custom Frappe apps** (without ERPNext modules), you can use PostgreSQL:
+
+### 1. Install PostgreSQL
+
+```bash
+# Install PostgreSQL 15
+sudo apt install postgresql postgresql-contrib -y
+
+# Start and enable
+sudo systemctl start postgresql
+sudo systemctl enable postgresql
+
+# Create database user
+sudo -u postgres psql
+CREATE USER frappe WITH PASSWORD 'your_password';
+CREATE DATABASE frappe OWNER frappe;
+\q
+```
+
+### 2. Configure Frappe for PostgreSQL
+
+When initializing bench with PostgreSQL:
+
+```bash
+# Initialize bench with PostgreSQL
+bench init --frappe-branch version-16 --db-type postgres frappe-bench
+
+# Or for existing bench, create site with PostgreSQL
+bench new-site pg-site.localhost \
+  --db-type postgres \
+  --db-host localhost \
+  --db-port 5432 \
+  --db-name frappe \
+  --db-password your_password \
+  --admin-password admin
+```
+
+### 3. Site Configuration
+
+Edit `site_config.json`:
+
+```json
+{
+  "db_host": "localhost",
+  "db_port": 5432,
+  "db_name": "frappe",
+  "db_password": "your_password",
+  "db_type": "postgres"
+}
+```
+
+### 4. Custom App with PostgreSQL
+
+When developing custom apps:
+
+```python
+# hooks.py - Use multisql for database-specific queries
+
+import frappe
+
+def get_data():
+    # Use frappe.db.multisql for database-specific queries
+    return frappe.db.multisql({
+        "mariadb": "SELECT * FROM tabUser WHERE name = %s",
+        "postgres": "SELECT * FROM tabUser WHERE name = %s"
+    }, (frappe.session.user,), as_dict=True)
+```
+
+### 5. Query Compatibility
+
+**Avoid MariaDB-specific syntax:**
+
+```python
+# ❌ Bad - MariaDB specific
+frappe.db.sql("""
+    UPDATE tabVehicle 
+    SET status = 'Active'
+    JOIN tabDepartment ON tabVehicle.department = tabDepartment.name
+""")
+
+# ✅ Good - Database agnostic
+frappe.db.set_value("Vehicle", vehicle_name, "status", "Active")
+
+# ✅ Good - Use multisql for complex queries
+frappe.db.multisql({
+    "mariadb": """
+        UPDATE tabVehicle v
+        JOIN tabDepartment d ON v.department = d.name
+        SET v.status = 'Active'
+    """,
+    "postgres": """
+        UPDATE tabVehicle v
+        SET status = 'Active'
+        FROM tabDepartment d
+        WHERE v.department = d.name
+    """
+})
+```
+
+### 6. Custom App Development Setup
+
+For custom apps without ERPNext:
+
+```bash
+# Create app
+bench new-app custom_fleet_mgmt
+
+# Initialize with PostgreSQL
+bench init --db-type postgres frappe-bench-pg
+cd frappe-bench-pg
+
+# Install custom app only (no ERPNext)
+bench get-app /path/to/custom_fleet_mgmt
+bench new-site dev.localhost --db-type postgres
+bench --site dev.localhost install-app custom_fleet_mgmt
+```
+
+### 7. Testing Custom Apps on PostgreSQL
+
+```bash
+# Run tests with PostgreSQL
+bench --site pg-test.localhost run-tests --app custom_fleet_mgmt
+
+# Check for SQL compatibility issues
+bench --site pg-test.localhost mariadb
+```
+
+### 8. Docker Development Environment
+
+Use community PostgreSQL images for development:
+
+```bash
+# Pull PostgreSQL development image
+docker pull vyogo/erpnext:sne-postgres-develop
+
+# Run container
+docker run -d \
+  --name erpnext-pg-dev \
+  -p 8000:8000 \
+  -p 5432:5432 \
+  -e POSTGRES_PASSWORD=ChangeMe \
+  vyogo/erpnext:sne-postgres-develop
+
+# Access: http://localhost:8000
+# User: Administrator
+# Password: admin
+```
+
+### 9. Migration from MariaDB to PostgreSQL
+
+If migrating existing site:
+
+```bash
+# Export from MariaDB
+bench --site mariadb-site backup --with-files
+
+# Create new PostgreSQL site
+bench new-site pg-site.localhost --db-type postgres
+
+# Import data (requires custom migration script)
+bench --site pg-site.localhost mariadb
+```
+
+**Note**: Full migration requires rewriting MariaDB-specific queries.
+
+### 10. Best Practices for PostgreSQL Compatibility
+
+1. **Use ORM methods** instead of raw SQL:
+   ```python
+   # Instead of raw SQL
+   frappe.get_all("Vehicle", filters={"status": "Active"})
+   
+   # Instead of INSERT
+   frappe.get_doc({"doctype": "Vehicle", ...}).insert()
+   ```
+
+2. **Use `frappe.db.multisql`** for database-specific queries
+
+3. **Avoid MariaDB-specific functions**:
+   - `GROUP_CONCAT` → Use Python aggregation
+   - `IFNULL` → Use `COALESCE`
+   - `NOW()` → Use `frappe.utils.now_datetime()`
+
+4. **Test on both databases** during development
+
+---
+
+## Summary: MariaDB vs PostgreSQL
+
+| Feature | MariaDB | PostgreSQL |
+|---------|---------|------------|
+| ERPNext Support | ✅ Full | ❌ Not supported |
+| Production Ready | ✅ Yes | ❌ No |
+| Custom Apps | ✅ Yes | ⚠️ Limited |
+| Performance | Good | Better (complex queries) |
+| Community Support | ✅ Official | ⚠️ Community |
+| Recommended For | Production ERPNext | Custom apps only |
+
+**Final Recommendation**: Use MariaDB for this project. PostgreSQL support is coming but not ready for production ERPNext deployments.
